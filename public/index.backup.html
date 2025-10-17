@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>各バスの最新位置（Leaflet・色分け・パルス）</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    html,body{height:100%}
+    body{margin:0;font:14px system-ui,-apple-system,Segoe UI,Roboto,Noto Sans JP,Arial,sans-serif;background:#f7f7f8}
+    header{display:flex;gap:.75rem;align-items:center;padding:12px 16px;background:#0f141a;color:#e8eef5;border-bottom:1px solid #1e2630}
+    header h1{font-size:16px;margin:0}
+    #app{display:grid;grid-template-columns:320px 1fr;height:calc(100% - 54px)}
+    #sidebar{border-right:1px solid #e5e7eb;overflow:auto;background:#fff}
+    #map{height:100%;width:100%}
+    .section{padding:12px 14px}
+    .list{display:grid;gap:8px;padding:0 14px 14px}
+    .item{display:flex;justify-content:space-between;gap:6px;padding:8px 10px;border:1px solid #e5e7eb;border-radius:10px;background:#fff;align-items:center}
+    .muted{color:#6b7280;font-size:12px}
+    .legend{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    .dot{width:12px;height:12px;border-radius:50%;display:inline-block;margin-right:6px}
+    @media (max-width: 960px){ #app{grid-template-columns: 1fr; grid-template-rows: 300px 1fr} #sidebar{order:2} #map{order:1} }
+
+    /* パルス点滅ドット（Leaflet DivIcon の中身） */
+    .pulse {
+      position: relative;
+      width: 20px; height: 20px;
+      border-radius: 50%;
+      background: var(--dot, #ff5252);
+      box-shadow: 0 0 0 0 rgba(0,0,0,0.25);
+      animation: pulse-breath 1.6s ease-in-out infinite;
+    }
+    .pulse::after {
+      content: "";
+      position: absolute;
+      inset: -6px;
+      border-radius: 50%;
+      border: 2px solid var(--dot, #ff5252);
+      opacity: .6;
+      animation: pulse-ring 1.6s ease-out infinite;
+    }
+    .pulse.stale { filter: grayscale(1); }
+    .pulse.very  { opacity: .5; }
+    @keyframes pulse-breath {
+      0%   { transform: scale(1);   box-shadow: 0 0 0 0 rgba(0,0,0,0.20); }
+      50%  { transform: scale(1.15); box-shadow: 0 0 0 8px rgba(0,0,0,0.05); }
+      100% { transform: scale(1);   box-shadow: 0 0 0 0 rgba(0,0,0,0.20); }
+    }
+    @keyframes pulse-ring {
+      0%   { transform: scale(0.6); opacity: .7; }
+      80%  { transform: scale(1.6); opacity: 0;  }
+      100% { opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>各バスの最新位置（Leaflet / Realtime Database）</h1>
+    <span class="muted" id="last-updated">— 取得中…</span>
+    <div style="margin-left:auto;display:flex;gap:8px">
+      <button id="btn-fit">全マーカーにフィット</button>
+      <button id="btn-reset">初期表示に戻す</button>
+      <!-- header 内のボタン群に追加 -->
+      <a href="/rssi.html" style="text-decoration:none"><button>RSSIグラフへ</button></a>
+    </div>
+  </header>
+
+  <div id="app">
+    <aside id="sidebar">
+      <div class="section">
+        <div class="legend">
+          <div class="dot" style="background:#999"></div><span>色＝バス/端末ごと</span>
+          <div class="dot" style="background:#999;filter:grayscale(1)"></div><span>60秒〜5分でグレー</span>
+          <div class="dot" style="background:#999;filter:grayscale(1);opacity:.5"></div><span>5分超は半透明</span>
+        </div>
+      </div>
+      <div class="section muted">接続状態：<span id="conn">—</span><br/>エラー：<span id="err">—</span></div>
+      <div class="section"><strong>バス一覧</strong></div>
+      <div class="list" id="bus-list"></div>
+    </aside>
+    <div id="map"></div>
+  </div>
+
+  <!-- Leaflet -->
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <!-- Firebase SDK（v11） -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-app.js";
+    import { getDatabase, ref, onChildAdded, query, limitToLast, get, child } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-database.js";
+
+    // ==== Firebase 設定 ====
+    const firebaseConfig = {
+      apiKey: "AIzaSyDU8s-5XLJH1Ac-EIfkL9SQPm8X1Wb2QZY",
+      authDomain: "beaconmanager-405e2.firebaseapp.com",
+      databaseURL: "https://beaconmanager-405e2-default-rtdb.firebaseio.com",
+      projectId: "beaconmanager-405e2",
+      storageBucket: "beaconmanager-405e2.appspot.com",
+      messagingSenderId: "380153233269",
+      appId: "1:380153233269:web:85d844b4897d2c8b169d3c"
+    };
+    const app = initializeApp(firebaseConfig);
+    const db  = getDatabase(app);
+
+    // ==== Leaflet ====
+    const map = L.map('map');
+    const defaultView = { center:[36.1113697, 140.1036747], zoom:14 };
+    map.setView(defaultView.center, defaultView.zoom);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'© OpenStreetMap contributors' }).addTo(map);
+
+    // ==== 停留所座標（name -> [lat,lng]）====
+    const beaconCoordinates = {
+      "予備": [36.10948194674492, 140.09998489081934],
+      "筑波病院入口": [36.093185892556335, 140.1037914639882],
+      "追越学生宿舎前": [36.095668888272726, 140.1028445895598],
+      "平砂学生宿舎前": [36.097919783656984, 140.1020445108298],
+      "筑波大学西": [36.103511800430105, 140.10153750886695],
+      "大学会館前": [36.10487541794868, 140.10111729192286],
+      "第一エリア前": [36.107965400224856, 140.0998112941018],
+      "第三エリア前": [36.11019180117873, 140.0984365219353],
+      "虹の広場": [36.11416118595694, 140.0970178451117],
+      "農林技術センター": [36.11867845255836, 140.09621579653592],
+      "一ノ矢学生宿舎前": [36.119539646538655, 140.09900459735684],
+      "大学植物見本園": [36.11624218198861, 140.102200745114],
+      "TARAセンター前": [36.11307129398093, 140.10235269246826],
+      "筑波大学中央": [36.111369694255615, 140.10367466093868],
+      "大学公園": [36.110020652055105, 140.104041523001],
+      "松美池": [36.10816512507706, 140.10439364641243],
+      "合宿所": [36.10384602305381, 140.1067827908528],
+      "天久保池": [36.100705339486716, 140.10607356710554]
+    };
+
+    // ==== 色分け（固定→自動HSL）====
+    const BUS_COLORS = { /* "receiver_01":"#ef4444" など固定したい場合ここに */ };
+    const hashHue = (s) => { let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))%360; return h; };
+    const getBusColor = (id) => BUS_COLORS[id] || `hsl(${hashHue(id)} 85% 55%)`;
+
+    // ==== UI ====
+    const markers = new Map(); // busId -> marker
+    const busListEl = document.getElementById('bus-list');
+    const lastUpdatedEl = document.getElementById('last-updated');
+    const connEl = document.getElementById('conn');
+    const errEl  = document.getElementById('err');
+    connEl.textContent = '接続中';
+    addEventListener('offline', () => connEl.textContent = 'オフライン');
+    addEventListener('online',  () => connEl.textContent = '接続中');
+
+    // 秒・ISO・"HH:mm:ss" を吸収
+    function parseTime(t){
+      if (typeof t === 'number') return (t>0 && t<1e12) ? t*1000 : t; // 秒→ms
+      if (typeof t === 'string'){
+        const m = t.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
+        if (m){
+          const [_,Hs,Ms,Ss] = m;
+          const now = new Date();
+          const utcMs = Date.UTC(
+            now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
+            Number(Hs)-9, Number(Ms), Number(Ss), 0 // JST→UTC
+          );
+          let ms = utcMs;
+          if (ms > Date.now()+60*1000) ms -= 24*3600*1000; // 未来なら前日補正
+          return ms;
+        }
+        const iso = /Z|([+-]\d{2}:?\d{2})$/.test(t) ? t : (t ? t+'Z' : '');
+        const ms = Date.parse(iso);
+        if (!isNaN(ms)) return ms;
+      }
+      return 0;
+    }
+
+    // パルスアイコン生成（古さでクラス付与）
+    function buildIcon(ageMs, baseColor){
+      const stale = ageMs > 60_000;    // 60秒
+      const very  = ageMs > 300_000;   // 5分
+      const cls = ['pulse']; if (stale) cls.push('stale'); if (very) cls.push('very');
+      const style = `--dot:${baseColor}`;
+      return L.divIcon({ className:'leaflet-div-icon', html:`<div class="${cls.join(' ')}" style="${style}"></div>` });
+    }
+
+    function ensureRow(busId, color){
+      let row = document.getElementById(`row-${busId}`);
+      if(!row){
+        row = document.createElement('div');
+        row.id = `row-${busId}`;
+        row.className = 'item';
+        row.innerHTML = `
+          <div><span class="dot" style="background:${color}"></span><strong>${busId}</strong><div class="muted"></div></div>
+          <div class="muted"></div>`;
+        busListEl.appendChild(row);
+      }else{
+        const dot = row.querySelector('.dot'); if (dot) dot.style.background = color;
+      }
+      return row;
+    }
+
+    function upsertFromLatLng(busId, name, lat, lng, t){
+      const color = getBusColor(busId);
+      const age = Date.now() - (t || 0);
+      const icon = buildIcon(age, color);
+      let m = markers.get(busId);
+      if(!m){ m = L.marker([lat, lng], { icon }).addTo(map); markers.set(busId, m); }
+      else  { m.setLatLng([lat, lng]); m.setIcon(icon); }
+      m.bindPopup(`🚌 ${busId}<br>${name ?? ''}<br>${t ? new Date(t).toLocaleString() : ''}`);
+
+      const row = ensureRow(busId, color);
+      row.children[0].querySelector('.muted').textContent = name ?? '(名称不明)';
+      row.children[1].textContent = t ? new Date(t).toLocaleString() : '';
+    }
+
+    function upsertFromName(busId, placeName, t){
+      const coords = beaconCoordinates[placeName];
+      const color = getBusColor(busId);
+      if(!coords){
+        console.warn(`[WARN] 座標辞書に未登録: ${placeName} (busId=${busId})`);
+        const row = ensureRow(busId, color);
+        row.children[0].querySelector('.muted').textContent = placeName ?? '(未登録)';
+        row.children[1].textContent = t ? new Date(t).toLocaleString() : '';
+        return;
+      }
+      upsertFromLatLng(busId, placeName, coords[0], coords[1], t);
+    }
+
+    function fitToAll(){
+      const ll = [];
+      markers.forEach(m => ll.push(m.getLatLng()));
+      if(ll.length === 0){ map.setView(defaultView.center, defaultView.zoom); return; }
+      const b = L.latLngBounds(ll); map.fitBounds(b.pad(0.2));
+    }
+    document.getElementById('btn-fit').onclick = fitToAll;
+    document.getElementById('btn-reset').onclick = () => map.setView(defaultView.center, defaultView.zoom);
+
+    // デバッグ：受信機一覧
+    (async () => {
+      try{
+        const root = ref(db);
+        const recvSnap = await get(child(root, "beacon_logs"));
+        if (recvSnap.exists()) console.log("[DEBUG] receivers:", Object.keys(recvSnap.val()));
+        else console.warn("[DEBUG] beacon_logs が空 or 読み取り不可");
+      }catch(e){ console.error("[DEBUG] initial get error:", e); }
+    })();
+
+    // beacon_logs 直読み：各受信機の最新1件
+    onChildAdded(ref(db, 'beacon_logs'), (receiverSnap) => {
+      const receiverId = receiverSnap.key;
+      const q = query(ref(db, `beacon_logs/${receiverId}`), limitToLast(1)); // pushId順の最新
+      onChildAdded(q, (logSnap) => {
+        const v = logSnap.val(); if(!v) return;
+        const t = parseTime(v.time);
+        if (typeof v.lat === 'number' && typeof v.lng === 'number') {
+          upsertFromLatLng(receiverId, v.name ?? '', v.lat, v.lng, t);
+        } else {
+          upsertFromName(receiverId, v.name, t);
+        }
+        lastUpdatedEl.textContent = `— 更新: ${new Date().toLocaleTimeString()}`;
+      });
+    }, (err) => { errEl.textContent = err?.message ?? String(err); });
+  </script>
+</body>
+</html>

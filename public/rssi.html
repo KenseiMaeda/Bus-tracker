@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RSSI × 時刻（Excel保存 / 名前ごとにシート分割 + 距離 + 押下マーク）</title>
+  <style>
+    html,body{height:100%}
+    body{margin:0;font:14px system-ui,-apple-system,Segoe UI,Roboto,Noto Sans JP,Arial,sans-serif;background:#f7f7f8}
+    header{display:flex;gap:.75rem;align-items:center;padding:12px 16px;background:#0f141a;color:#e8eef5;border-bottom:1px solid #1e2630}
+    header h1{font-size:16px;margin:0}
+    main{display:grid;grid-template-columns:320px 1fr; height:calc(100% - 54px)}
+    #side{background:#fff; border-right:1px solid #e5e7eb; padding:12px; overflow:auto}
+    .field{display:grid; gap:6px; margin:10px 0}
+    .muted{color:#6b7280; font-size:12px}
+    .chip{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;border:1px solid #e5e7eb;background:#fff;margin:2px 6px 2px 0}
+    .dot{width:10px;height:10px;border-radius:50%}
+    #chartWrap{padding:12px}
+    #status{padding:0 12px 12px}
+    button{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid #d1d5db;background:#fff;cursor:pointer}
+    .primary{border-color:#0ea5e9;background:#38bdf8;color:#0b1726}
+    .danger{border-color:#ef4444;background:#fca5a5;color:#7f1d1d}
+    .accent{border-color:#10b981;background:#34d399;color:#064e3b}
+    .row{display:flex;gap:8px;align-items:center}
+    @media (max-width: 960px){ main{grid-template-columns: 1fr; grid-template-rows: auto 1fr} }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>RSSI × 時刻（Firebase Realtime Database）</h1>
+    <span class="muted" id="last">— 停止中</span>
+    <div style="margin-left:auto;display:flex;gap:8px">
+      <a href="/index.html" style="text-decoration:none"><button>地図へ戻る</button></a>
+      <button id="btn-start" class="primary">▶︎ スタート</button>
+      <!-- ▼ 追加：ログボタン（押下マーク） -->
+      <button id="btn-mark"  class="accent" disabled>● ログ</button>
+      <button id="btn-stop"  class="danger" disabled>■ ストップ & Excel保存</button>
+      <button id="btn-clear">描画リセット</button>
+    </div>
+  </header>
+
+  <main>
+    <aside id="side">
+      <div class="field">
+        <label><strong>端末ID（deviceId）</strong></label>
+        <select id="sel-receiver"></select>
+        <div class="muted">選択した受信機のみを <b>開始後</b> にリアルタイム購読します（過去は読みません）。</div>
+      </div>
+
+      <div class="field">
+        <label><strong>ビーコンの絞り込み（任意）</strong></label>
+        <input id="filter" placeholder="例: name=筑波大学中央 / uuid=xxxx / major=1&minor=3" />
+        <div class="muted">空欄＝全ビーコン。`name=`, `uuid=`, `major=`, `minor=`（AND結合可）。</div>
+      </div>
+
+      <div class="field">
+        <label><strong>凡例（ビーコン毎）</strong></label>
+        <div id="legend"></div>
+      </div>
+
+      <div class="muted">ヒント：重いと感じたら送信間隔を長くするか、受信機/ビーコンを絞ってください。</div>
+      <div class="muted">ログボタンで押した瞬間の <b>ローカル時刻</b>を記録し、縦線で表示＆Excelの <b>MARKERS</b> シートに書き出します。</div>
+    </aside>
+
+    <section id="chartWrap">
+      <canvas id="chart" height="120"></canvas>
+      <div id="status" class="muted">—</div>
+    </section>
+  </main>
+
+  <!-- Chart.js + 日付アダプタ -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+  <!-- ★ 縦線用：Annotation プラグイン -->
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
+
+  <!-- SheetJS (XLSX) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <!-- Firebase v11（app/database/auth） -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-app.js";
+    import { getDatabase, ref, child, get, onChildAdded, query, limitToLast } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-database.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-auth.js";
+
+    // ==== Firebase 設定 ====
+    const firebaseConfig = {
+      apiKey: "AIzaSyDU8s-5XLJH1Ac-EIfkL9SQPm8X1Wb2QZY",
+      authDomain: "beaconmanager-405e2.firebaseapp.com",
+      databaseURL: "https://beaconmanager-405e2-default-rtdb.firebaseio.com",
+      projectId: "beaconmanager-405e2",
+      storageBucket: "beaconmanager-405e2.appspot.com",
+      messagingSenderId: "380153233269",
+      appId: "1:380153233269:web:85d844b4897d2c8b169d3c"
+    };
+    const app  = initializeApp(firebaseConfig);
+    const db   = getDatabase(app);
+    const auth = getAuth(app);
+
+    // ==== ユーティリティ ====
+    const MAX_POINTS = 2000;
+
+    function toJSTISO(ms){
+      if (!Number.isFinite(ms)) return '';
+      const d = new Date(ms + 9*3600*1000);
+      const pad = (n, z=2)=>String(n).padStart(z,'0');
+      const y = d.getUTCFullYear(), m = pad(d.getUTCMonth()+1), day = pad(d.getUTCDate());
+      const hh = pad(d.getUTCHours()), mm = pad(d.getUTCMinutes()), ss = pad(d.getUTCSeconds());
+      const ms3 = pad(d.getUTCMilliseconds(),3);
+      return `${y}-${m}-${day}T${hh}:${mm}:${ss}.${ms3}+09:00`;
+    }
+    function parseTimeAny(t){
+      if (typeof t === 'number') return (t>0 && t<1e12) ? t*1000 : t;
+      if (typeof t === 'string'){
+        if (/^\d+$/.test(t)) { const n = Number(t); return (n>0 && n<1e12) ? n*1000 : n; }
+        const ms = Date.parse(t); if (!isNaN(ms)) return ms;
+      }
+      return NaN;
+    }
+    function haversineM(lat1, lon1, lat2, lon2){
+      if (![lat1,lon1,lat2,lon2].every(Number.isFinite)) return NaN;
+      const R = 6371000;
+      const toRad = d => d * Math.PI / 180;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      return R * c;
+    }
+
+    const ColorMgr = (() => {
+      const SAFE_PALETTE = ["#4477AA","#EE6677","#228833","#CCBB44","#66CCEE","#AA3377","#BBBBBB","#000000","#DDDDDD","#117733","#332288","#88CCEE","#44AA99","#999933","#CC6677","#882255","#661100","#6699CC","#AA4466","#88AA00"];
+      const assigned = new Map(); const used = new Set(); let gen = 0;
+      const hsl = (h,s,l)=>`hsl(${Math.round(h)} ${Math.round(s*100)}% ${Math.round(l*100)}%)`;
+      function pick(){for(const c of SAFE_PALETTE){if(!used.has(c))return c;}return null;}
+      function genColor(){const GA=137.508; const c=hsl((gen++*GA)%360,0.75,0.52); return c;}
+      return { colorFor(k){ if(assigned.has(k)) return assigned.get(k); const c=pick()??genColor(); used.add(c); assigned.set(k,c); return c; },
+               reset(){assigned.clear();used.clear();gen=0;} };
+    })();
+
+    // ==== Chart.js ====
+    const chart = new Chart(document.getElementById('chart'), {
+      type: 'line',
+      data: { datasets: [] },
+      options: {
+        animation: false, responsive: true, parsing: false,
+        plugins: {
+          legend: { display: false },
+          // ★ 縦線アノテーションの初期領域（後から動的に追加）
+          annotation: { annotations: {} }
+        },
+        scales: { x: { type:'time', time:{ unit:'minute' } }, y:{ reverse:true, title:{ display:true, text:'RSSI (dBm)' } } },
+        elements: { point:{ radius:0 }, line:{ borderWidth:1 } }
+      }
+    });
+    const legendEl = document.getElementById('legend');
+    function ensureSeries(seriesKey, label){
+      let ds = chart.data.datasets.find(d => d.seriesKey === seriesKey);
+      if (!ds){
+        const color = ColorMgr.colorFor(seriesKey);
+        ds = { label: label ?? seriesKey, seriesKey, data: [], borderColor: color, backgroundColor:'transparent', tension:0.1 };
+        chart.data.datasets.push(ds);
+        const chip = document.createElement('div'); chip.className='chip'; chip.id='chip-'+seriesKey;
+        chip.innerHTML = `<span class="dot" style="background:${color}"></span><span>${label ?? seriesKey}</span>`;
+        legendEl.appendChild(chip);
+      }
+      return ds;
+    }
+    function pruneIfHeavy(ds){ if (ds.data.length>MAX_POINTS) ds.data = ds.data.filter((_,i)=>i%2===0); }
+
+    // ==== UI refs ====
+    const statusEl = document.getElementById('status');
+    const lastEl   = document.getElementById('last');
+    const selRecv  = document.getElementById('sel-receiver');
+    const filterEl = document.getElementById('filter');
+    const btnStart = document.getElementById('btn-start');
+    const btnMark  = document.getElementById('btn-mark');   // ★ 追加：ログボタン
+    const btnStop  = document.getElementById('btn-stop');
+    const btnClear = document.getElementById('btn-clear');
+
+    // ==== ランタイム状態 ====
+    let isRunning = false;
+    let detach = null;
+    let startedAt = 0;
+
+    // 距離計算用
+    let startPos = null;
+    let lastPos  = null;
+    let cumDistM = 0;
+
+    // RSSI 用（既存）
+    const COLS = ["beacon_name","rssi","lat","lng","alt","datetime_client","datetime_server","datetime_local","dist_from_start_m","cum_dist_m"];
+    let allRows = [ [...COLS] ];
+    let byName  = new Map();
+
+    // ★ 押下マーク（ローカル時刻のみ）
+    const MARK_COLS = ["label","datetime_local"];
+    let markRows = [ [...MARK_COLS] ];
+    let markCount = 0;
+
+    // アノテーションキーの生成
+    function annoKey(ts){ return `mark_${ts}`; }
+
+    // 押下マークの追加（縦線＋Excel用配列）
+    function addLocalMark(){
+      if (!isRunning) return;
+      const ts = Date.now();
+      const label = `tap#${++markCount}`;
+      // Excel 用
+      markRows.push([label, toJSTISO(ts)]);
+      // 縦線（annotation）
+      chart.options.plugins.annotation.annotations[annoKey(ts)] = {
+        type: 'line',
+        xMin: ts,
+        xMax: ts,
+        borderColor: '#10b981',
+        borderWidth: 2,
+        label: {
+          display: true,
+          content: label,
+          position: 'start',
+          backgroundColor: 'rgba(16,185,129,.15)',
+          color: '#064e3b',
+          padding: 4
+        }
+      };
+      chart.update('none');
+      statusEl.textContent = `マーク: ${label} @ ${new Date(ts).toLocaleTimeString()}`;
+    }
+
+    function matchFilter(v, expr){
+      if (!expr || !expr.trim()) return true;
+      const parts = expr.split('&').map(s => s.trim()).filter(Boolean);
+      for (const p of parts){
+        const m = p.match(/^(\w+)\s*=\s*(.+)$/); if (!m) continue;
+        const k=m[1], val=m[2]; const vv=(v[k]??'').toString(); if (vv!=val) return false;
+      }
+      return true;
+    }
+    function excelSafeSheetName(raw){
+      const s = String(raw ?? '').replace(/[\\\/:\?\*\[\]]/g,'_').slice(0,31) || 'unknown';
+      return s;
+    }
+    function sheetKey(v){
+      if (v?.name) return v.name;
+      if (v?.uuid && (v.major!=null) && (v.minor!=null)) return `${v.uuid} (${v.major},${v.minor})`;
+      if (v?.mac) return v.mac;
+      return 'unknown';
+    }
+    function pushRows(v, localNowMs, distFromStartM, cumDistMCurrent){
+      const clientMs = Number.isFinite(v.client_ts) ? v.client_ts : parseTimeAny(v.time);
+      const serverMs = Number.isFinite(v.server_ts) ? v.server_ts : parseTimeAny(v.server_time);
+      const localMs  = localNowMs;
+
+      const cISO = toJSTISO(Number.isFinite(clientMs)?clientMs:NaN);
+      const sISO = toJSTISO(Number.isFinite(serverMs)?serverMs:NaN);
+      const lISO = toJSTISO(Number.isFinite(localMs)?localMs:NaN);
+
+      const lat = (typeof v.lat === 'number') ? v.lat : '';
+      const lng = (typeof v.lng === 'number') ? v.lng : '';
+      const alt = (typeof v.alt === 'number') ? v.alt : '';
+
+      const row = [
+        String(v.name ?? ''), (v.rssi!=null ? String(v.rssi) : ''),
+        String(lat), String(lng), String(alt),
+        cISO, sISO, lISO,
+        Number.isFinite(distFromStartM) ? String(Math.round(distFromStartM)) : '',
+        Number.isFinite(cumDistMCurrent) ? String(Math.round(cumDistMCurrent)) : ''
+      ];
+
+      allRows.push(row);
+      const key = sheetKey(v);
+      if (!byName.has(key)) byName.set(key, [ [...COLS] ]);
+      byName.get(key).push(row);
+    }
+
+    async function saveXlsx(){
+      const wb = XLSX.utils.book_new();
+      const used = new Set();
+      const uniq = (name)=>{ let base = excelSafeSheetName(name); let n=1, out=base; while(used.has(out)||out===''){ out = (base.slice(0,29)) + '_' + (++n); } used.add(out); return out; };
+
+      // 名前ごとシート
+      for (const [label, rows] of byName.entries()){
+        const ws = XLSX.utils.aoa_to_sheet(rows);
+        XLSX.utils.book_append_sheet(wb, ws, uniq(label));
+      }
+
+      // ALL
+      const wsAll = XLSX.utils.aoa_to_sheet(allRows.length ? allRows : [COLS]);
+      XLSX.utils.book_append_sheet(wb, wsAll, "ALL");
+
+      // ★ MARKERS（押下マーク）
+      const wsMarks = XLSX.utils.aoa_to_sheet(markRows.length ? markRows : [MARK_COLS]);
+      XLSX.utils.book_append_sheet(wb, wsMarks, "MARKERS");
+
+      const fname = `rssi_${selRecv.value||'receiver'}_${new Date(startedAt||Date.now()).toISOString().replace(/[:.]/g,'-')}.xlsx`;
+      XLSX.writeFile(wb, fname);
+    }
+
+    function resetView(){
+      ColorMgr.reset();
+      chart.data.datasets=[];
+      legendEl.innerHTML='';
+      // ★ 縦線アノテーションもリセット
+      chart.options.plugins.annotation.annotations = {};
+      chart.update();
+
+      allRows = [ [...COLS] ];
+      byName.clear();
+
+      // ★ 押下マークもリセット
+      markRows = [ [...MARK_COLS] ];
+      markCount = 0;
+    }
+
+    function labelForLegend(v){
+      if (v?.name) return v.name;
+      if (v?.uuid && (v.major!=null) && (v.minor!=null)) return `${v.uuid} (${v.major},${v.minor})`;
+      if (v?.mac) return v.mac;
+      return 'unknown';
+    }
+    function seriesKeyOf(v){
+      if (v?.name) return `name:${v.name}`;
+      if (v?.uuid && (v.major!=null) && (v.minor!=null)) return `id:${v.uuid}/${v.major}/${v.minor}`;
+      if (v?.mac) return `mac:${v.mac}`;
+      return 'beacon:unknown';
+    }
+
+    // ===== 認証：匿名ログインしてから読み取り =====
+    onAuthStateChanged(auth, async (user) => {
+      if (!user) return; // まだ未ログイン
+      try {
+        const snap = await get(child(ref(db), 'beacon_logs'));
+        const keys = snap.exists() ? Object.keys(snap.val()) : [];
+        selRecv.innerHTML = keys.map(k => `<option value="${k}">${k}</option>`).join('') || `<option>(なし)</option>`;
+        document.getElementById('status').textContent = 'ログイン済み。受信機を選んで開始できます。';
+      } catch (e) {
+        document.getElementById('status').textContent = '初期ロードでエラー: ' + (e?.message || e);
+        console.error(e);
+      }
+    });
+    signInAnonymously(auth).catch((e) => {
+      document.getElementById('status').textContent = 'サインイン失敗: ' + (e?.message || e);
+      console.error(e);
+    });
+
+    // ===== 記録開始/停止 =====
+    async function start(){
+      if (isRunning) return;
+      if (!selRecv.value) return alert('受信機が選ばれていません');
+
+      resetView();
+      startPos = null; lastPos = null; cumDistM = 0;
+
+      startedAt = Date.now();
+      isRunning = true;
+      btnStart.disabled=true; btnStop.disabled=false; btnMark.disabled=false;
+      lastEl.textContent='— 記録中…';
+      statusEl.textContent='リアルタイム受信を開始しました。';
+
+      const receiverId = selRecv.value;
+
+      const q = query(ref(db, `beacon_logs/${receiverId}`), limitToLast(1));
+      const off = onChildAdded(q, (s) => {
+        const localNow = Date.now();
+        const v = s.val() || {};
+        if (!matchFilter(v, filterEl.value)) return;
+
+        const tForChart = parseTimeAny(v.client_ts ?? v.time ?? v.server_ts) || localNow;
+        const ds = ensureSeries(seriesKeyOf(v), labelForLegend(v));
+        if (v.rssi!=null) ds.data.push({ x:tForChart, y:v.rssi });
+        pruneIfHeavy(ds);
+        chart.update('none');
+
+        // 距離計算
+        let distFromStartM = NaN;
+        const lat = (typeof v.lat === 'number') ? v.lat : NaN;
+        const lng = (typeof v.lng === 'number') ? v.lng : NaN;
+        if (Number.isFinite(lat) && Number.isFinite(lng)){
+          if (!startPos) startPos = { lat, lng };
+          distFromStartM = haversineM(startPos.lat, startPos.lng, lat, lng);
+          if (lastPos){
+            const step = haversineM(lastPos.lat, lastPos.lng, lat, lng);
+            if (Number.isFinite(step) && step <= 2000) cumDistM += step;
+          }
+          lastPos = { lat, lng };
+        }
+
+        // Excel 行
+        pushRows(v, localNow, distFromStartM, cumDistM);
+
+        const showD = d => Number.isFinite(d) ? `${Math.round(d)} m` : '—';
+        statusEl.textContent = `リアルタイム受信中｜始点からの直線距離: ${showD(distFromStartM)}｜累積距離: ${showD(cumDistM)}`;
+        lastEl.textContent=`— 更新: ${new Date().toLocaleTimeString()}`;
+      }, (err)=>{ statusEl.textContent = 'エラー: '+(err?.message||String(err)); });
+
+      detach = () => off();
+    }
+
+    async function stop(){
+      if (!isRunning) return;
+      isRunning=false;
+      if (detach) { detach(); detach=null; }
+      btnStart.disabled=false; btnStop.disabled=true; btnMark.disabled=true;
+
+      statusEl.textContent='停止しました。Excel を保存します…';
+      try {
+        await saveXlsx();
+        statusEl.textContent='停止し、Excel を保存しました。';
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent='保存時にエラーが発生しました。';
+      }
+      lastEl.textContent='— 停止中';
+    }
+
+    // UI events
+    btnStart.addEventListener('click', start);
+    btnStop .addEventListener('click', stop);
+    btnClear.addEventListener('click', ()=>{ chart.data.datasets.forEach(ds=>ds.data=[]); chart.update(); });
+    btnMark .addEventListener('click', addLocalMark); // ★ 押下マーク
+
+  </script>
+</body>
+</html>

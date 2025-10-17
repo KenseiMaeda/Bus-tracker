@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bus Stop Passage Logger（ビーコン=到着判定）</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    html,body{height:100%}
+    body{margin:0;background:#0b1220;color:#e8eef5;
+      font:14px system-ui,-apple-system,Segoe UI,Roboto,Noto Sans JP,Arial,sans-serif}
+    header{display:flex;gap:.75rem;align-items:center;padding:10px 12px;
+      border-bottom:1px solid #1e2630;background:#0f141a}
+    header h1{font-size:16px;margin:0}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-left:auto}
+    label{font-size:12px;opacity:.95;display:flex;gap:6px;align-items:center}
+    input,select,button{font:inherit}
+    select, input[type="number"], input[type="text"]{
+      padding:6px 8px;border-radius:8px;border:1px solid #334155;background:#0b1220;color:#e8eef5
+    }
+    input[type="checkbox"]{transform:translateY(1px)}
+    button{padding:8px 10px;border-radius:8px;border:1px solid #334155;background:#192231;color:#e8eef5;cursor:pointer}
+    button.primary{border-color:#0ea5e9;background:#0ea5e91a}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    #app{display:grid;grid-template-rows:auto auto 1fr;height:100%}
+    #msg{padding:8px 10px;background:#0b1220;border-bottom:1px solid #1e2630}
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#0ea5e91a;border:1px solid #0ea5e9;color:#e8eef5;margin-left:6px}
+    .bar{display:flex;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #1e2630;background:#0f141a}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:8px 10px;border-bottom:1px solid #1e2630;text-align:left}
+    th{opacity:.9}
+    .muted{opacity:.8}
+    .ok{color:#86efac}
+    .warn{color:#fbbf24}
+    .err{color:#f87171}
+    .nowrap{white-space:nowrap}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>通過ログ（ビーコン=到着判定）</h1>
+    <div class="row">
+      <label>デデュープ間隔(秒)
+        <input id="dedupeSec" type="number" min="0" step="5" value="120" style="width:80px">
+      </label>
+      <label>記録をDBに保存 <input id="storeDb" type="checkbox"></label>
+      <button id="btnCsv">CSVダウンロード</button>
+      <button id="btnTest">自己テスト</button>
+      <a href="/index.html" style="text-decoration:none"><button>地図へ戻る</button></a>
+      <button id="btn-clear">描画リセット</button>
+    </div>
+  </header>
+
+  <div id="msg" class="muted">
+    ルール：<b>ビーコン name が停留所名と一致</b>したら到着として記録します。
+    <span class="pill">デデュープ＝同じ（バス×停留所）を指定秒数内は1回だけ</span>
+  </div>
+
+  <div class="bar">
+    <label>停留所
+      <select id="filterStop"><option value="">（すべて）</option></select>
+    </label>
+    <label>バスID
+      <input id="filterBus" type="text" placeholder="一部一致" style="width:160px">
+    </label>
+    <span class="muted" id="count"></span>
+    <span class="muted" id="status" style="margin-left:auto">—</span>
+  </div>
+
+  <div style="overflow:auto">
+    <table id="tbl">
+      <thead>
+        <tr><th>日時</th><th>バス</th><th>停留所</th></tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <!-- Firebase SDK（ESM） -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-app.js";
+    import {
+      getDatabase, ref, child, get, onChildAdded, query, limitToLast, push, set
+    } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-database.js";
+    
+    // === 必要に応じてあなたの設定に置き換え ===
+    const firebaseConfig = {
+      apiKey: "AIzaSyDU8s-5XLJH1Ac-EIfkL9SQPm8X1Wb2QZY",
+      authDomain: "beaconmanager-405e2.firebaseapp.com",
+      databaseURL: "https://beaconmanager-405e2-default-rtdb.firebaseio.com",
+      projectId: "beaconmanager-405e2",
+      storageBucket: "beaconmanager-405e2.appspot.com",
+      messagingSenderId: "380153233269",
+      appId: "1:380153233269:web:85d844b4897d2c8b169d3c"
+    };
+
+    // === 停留所リスト（既存のを流用）===
+    const allStops = {
+      "つくばセンター":[36.08289942124152,140.11215823302055],
+      "吾妻小学校":[36.08545454930246,140.10879643597397],
+      "筑波大学春日エリア前":[36.087928739790094,140.10724560688118],
+      "筑波メディカルセンター前":[36.09047561919198,140.10558471895652],
+      "メディカルセンター病院":[36.092442694229675,140.10572185697816],
+      "追越宿舎東":[36.0946576190114,140.10669902289703],
+      "天久保2丁目":[36.097460240554796,140.10610406754512],
+      "天久保3丁目":[36.10652731090851,140.1056473121722],
+      "筑波病院入口":[36.093185892556335,140.1037914639882],
+      "追越学生宿舎前":[36.095668888272726,140.1028445895598],
+      "平砂学生宿舎前":[36.097919783656984,140.1020445108298],
+      "筑波大学西":[36.103511800430105,140.10153750886695],
+      "大学会館前":[36.10487541794868,140.10111729192286],
+      "第一エリア前":[36.107965400224856,140.0998112941018],
+      "第三エリア前":[36.11019180117873,140.0984365219353],
+      "虹の広場":[36.11416118595694,140.0970178451117],
+      "農林技術センター":[36.11867845255836,140.09621579653592],
+      "一ノ矢学生宿舎前":[36.119539646538655,140.09900459735684],
+      "大学植物見本園":[36.11624218198861,140.102200745114],
+      "TARAセンター前":[36.11307129398093,140.10235269246826],
+      "筑波大学中央":[36.111369694255615,140.10367466093868],
+      "大学公園":[36.110020652055105,140.104041523001],
+      "松美池":[36.10816512507706,140.10439364641243],
+      "合宿所":[36.10384602305381,140.1067827908528],
+      "天久保池":[36.100705339486716,140.10607356710554],
+      "予備":[36.10948194674492,140.09998489081934]
+    };
+    const beaconStops = {
+      "筑波病院入口":[36.093185892556335,140.1037914639882],
+      "追越学生宿舎前":[36.095668888272726,140.1028445895598],
+      "平砂学生宿舎前":[36.097919783656984,140.1020445108298],
+      "筑波大学西":[36.103511800430105,140.10153750886695],
+      "大学会館前":[36.10487541794868,140.10111729192286],
+      "第一エリア前":[36.107965400224856,140.0998112941018],
+      "第三エリア前":[36.11019180117873,140.0984365219353],
+      "虹の広場":[36.11416118595694,140.0970178451117],
+      "農林技術センター":[36.11867845255836,140.09621579653592],
+      "一ノ矢学生宿舎前":[36.119539646538655,140.09900459735684],
+      "大学植物見本園":[36.11624218198861,140.102200745114],
+      "TARAセンター前":[36.11307129398093,140.10235269246826],
+      "筑波大学中央":[36.111369694255615,140.10367466093868],
+      "大学公園":[36.110020652055105,140.104041523001],
+      "松美池":[36.10816512507706,140.10439364641243],
+      "合宿所":[36.10384602305381,140.1067827908528],
+      "天久保池":[36.100705339486716,140.10607356710554],
+      "予備":[36.10948194674492,140.09998489081934]
+    };
+    const RECOGNIZED_STOPS = new Set([...Object.keys(allStops), ...Object.keys(beaconStops)]);
+
+    // === UI refs ===
+    const $ = (id)=>document.getElementById(id);
+    const tbody = $('tbody');
+    const statusEl = $('status');
+    const countEl = $('count');
+    const filterStop = $('filterStop');
+    const filterBus = $('filterBus');
+    const dedupeSecInput = $('dedupeSec');
+    const storeDbCk = $('storeDb');
+
+    // 停留所フィルタに候補を入れる
+    [...RECOGNIZED_STOPS].sort().forEach(n=>{
+      const opt = document.createElement('option'); opt.value = n; opt.textContent = n; filterStop.appendChild(opt);
+    });
+
+    // === Firebase init & subscribe ===
+    const app = initializeApp(firebaseConfig);
+    const db  = getDatabase(app);
+
+    // ログ保持
+    const rows = []; // {t, busId, stop}
+    const lastHit = new Map(); // key = `${busId}@@${stop}` -> ms
+
+    // 表示更新
+    function refreshTable(){
+      const stopSel = filterStop.value.trim();
+      const busLike = filterBus.value.trim();
+      const ddMs = Math.max(0, Number(dedupeSecInput.value||0))*1000;
+
+      const filtered = rows.filter(r=>{
+        if (stopSel && r.stop !== stopSel) return false;
+        if (busLike && !String(r.busId).includes(busLike)) return false;
+        return true;
+      }).sort((a,b)=> b.t - a.t);
+
+      tbody.innerHTML = filtered.map(r=>`
+        <tr>
+          <td class="nowrap">${new Date(r.t).toLocaleString()}</td>
+          <td>${r.busId}</td>
+          <td>${r.stop}</td>
+        </tr>`).join('');
+      countEl.textContent = `表示 ${filtered.length} 件（総計 ${rows.length} 件） / デデュープ ${ddMs/1000}s`;
+    }
+
+    // CSV
+    function downloadCSV(){
+      const hdr = ['timeISO','local','busId','stop'];
+      const lines = [hdr.join(',')];
+      rows.forEach(r=>{
+        const iso = new Date(r.t).toISOString();
+        const loc = new Date(r.t).toLocaleString();
+        lines.push([iso, `"${loc}"`, `"${r.busId}"`, `"${r.stop}"`].join(','));
+      });
+      const blob = new Blob([lines.join('\n')], {type:'text/csv'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'passages.csv'; a.click();
+      setTimeout(()=>URL.revokeObjectURL(url), 1000);
+    }
+
+    // 到着判定（ビーコン名のみ）
+    async function onBeaconLog(busId, payload){
+      // payload.name が停留所名と一致したら到着
+      const stop = (payload && typeof payload.name==='string') ? payload.name.trim() : '';
+      if (!RECOGNIZED_STOPS.has(stop)) return; // 未登録名は無視
+
+      const t = parseTime(payload?.time); // 受信時刻 or now
+      const key = `${busId}@@${stop}`;
+      const now = t || Date.now();
+      const ddMs = Math.max(0, Number(dedupeSecInput.value||0))*1000;
+      const prev = lastHit.get(key) || 0;
+
+      if (now - prev < ddMs) {
+        statusEl.textContent = `抑制: ${busId} @ ${stop} （${Math.round((now-prev)/1000)}s 内）`;
+        statusEl.className = 'warn';
+        return;
+      }
+
+      lastHit.set(key, now);
+
+      const row = { t: now, busId, stop };
+      rows.push(row);
+      refreshTable();
+
+      if (storeDbCk.checked) {
+        try {
+          const ymd = new Date(now).toISOString().slice(0,10); // YYYY-MM-DD
+          await set(push(ref(db, `passages/${ymd}`)), row);
+          statusEl.textContent = `保存: ${busId} @ ${stop}`;
+          statusEl.className = 'ok';
+        } catch (e) {
+          statusEl.textContent = `保存失敗: ${e?.message || e}`;
+          statusEl.className = 'err';
+        }
+      } else {
+        statusEl.textContent = `記録: ${busId} @ ${stop}`;
+        statusEl.className = 'ok';
+      }
+    }
+
+    // 時刻パーサ（既存互換）
+    function parseTime(t){
+      if (typeof t === 'number') return (t>0 && t<1e12) ? t*1000 : t;
+      if (typeof t === 'string'){
+        const m = t.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
+        if (m){
+          const [_,Hs,Ms,Ss] = m;
+          const now = new Date();
+          const utcMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), Number(Hs)-9, Number(Ms), Number(Ss), 0);
+          let ms = utcMs; if (ms > Date.now()+60*1000) ms -= 24*3600*1000;
+          return ms;
+        }
+        const iso = /Z|([+-]\d{2}:?\d{2})$/.test(t) ? t : (t ? t+'Z' : '');
+        const ms = Date.parse(iso); if (!isNaN(ms)) return ms;
+      }
+      return Date.now();
+    }
+
+    // DB購読（各受信機の新規ログすべてを追う）
+    function subscribe(){
+      const logsRef = ref(db, 'beacon_logs');
+      onChildAdded(logsRef, (receiverSnap)=>{
+        const busId = receiverSnap.key;
+        // 直近をある程度（例: 200件）＆以降の新規を購読
+        const q = query(ref(db, `beacon_logs/${busId}`), limitToLast(200));
+        onChildAdded(q, (logSnap)=>{
+          const v = logSnap.val(); if (!v) return;
+          onBeaconLog(busId, v);
+        });
+      });
+      statusEl.textContent = '購読中…';
+      statusEl.className = 'muted';
+    }
+    subscribe();
+
+    // UI events
+    filterStop.addEventListener('change', refreshTable);
+    filterBus.addEventListener('input', refreshTable);
+    dedupeSecInput.addEventListener('change', refreshTable);
+    $('btnCsv').addEventListener('click', downloadCSV);
+
+    // 自己テスト：同じ停留所を短時間に2回→1回だけ記録、別停留所は記録される
+    $('btnTest').addEventListener('click', async ()=>{
+      const now = Date.now();
+      const bus = 'TEST-BUS';
+      const stop = '筑波大学中央';
+      const stop2 = '大学会館前';
+      await onBeaconLog(bus, { name: stop, time: new Date(now).toISOString() });
+      await onBeaconLog(bus, { name: stop, time: new Date(now+30*1000).toISOString() }); // 30秒後（既定120秒内=抑制）
+      await onBeaconLog(bus, { name: stop2, time: new Date(now+40*1000).toISOString() }); // 別停留所=記録
+      // デデュープ間隔を超えたケース
+      setTimeout(()=> onBeaconLog(bus, { name: stop, time: new Date(Date.now()).toISOString() }), 1500);
+      alert('自己テストを流しました（表とステータスをご確認ください）');
+    });
+
+    // スモークテスト（開発者用）
+    console.assert(typeof onBeaconLog === 'function', 'onBeaconLog 未定義');
+  </script>
+</body>
+</html>
