@@ -3,16 +3,24 @@
     "public": "public",
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
     "cleanUrls": true,
-    "headers": [
-      {
-        "source": "/index.html",
-        "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }]
-      }
-    ],
+
     "rewrites": [
-      { "source": "/", "destination": "/index.html" },
-      { "source": "/passages", "destination": "/index.html" },
-      { "source": "/rssi", "destination": "/index.html" }
+      {
+        "source": "/plateau",
+        "destination": "/Plateau-View/index.html"
+      },
+      {
+        "source": "/rssi",
+        "destination": "/RSSI-Measurement/index.html"
+      },
+      {
+        "source": "/transit",
+        "destination": "/Transit-Logger/index.html"
+      },
+      {
+        "source": "/",
+        "destination": "/Plateau-View/index.html"
+      }
     ]
   }
 }
