@@ -13,7 +13,7 @@ export const appFb = initializeApp(firebaseConfig);
 export const db  = getDatabase(appFb);
 
 // PC側位置（停留所テーブル）を強制するか
-let FORCE_SERVER_POSITION = true;
+let FORCE_SERVER_POSITION = true; //停留所ごとの「PC側座標」優先
 export function setForceServerPosition(v){ FORCE_SERVER_POSITION = !!v; }
 export function isForceServerPosition(){ return FORCE_SERVER_POSITION; }
 

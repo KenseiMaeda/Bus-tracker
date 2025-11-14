@@ -3,39 +3,24 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>三次元化（停留所3D＋RSSI）</title>
+  <title>3Dインフラモデル（つくば市）</title>
 
   <!-- 404を出さないダミーfavicon（必要なら本物に差し替え） -->
   <link rel="icon" href="data:,">
-
   <link rel="preconnect" href="https://api.maptiler.com">
-  <style>
-    html,body,#map{height:100%} body{margin:0}
-    header{position:absolute;z-index:10;left:12px;top:12px;background:#0f141a;color:#e5eef7;
-      padding:8px 12px;border-radius:10px;font:14px system-ui}
-    .panel{position:absolute;z-index:10;left:12px;bottom:12px;right:12px;background:#fff;
-      padding:10px;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.12)}
-    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-    .muted{color:#6b7280}
-    .item{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee}
-    .dot{display:inline-block;width:10px;height:10px;border-radius:999px;margin-right:6px}
-    .bus-icon{--dot:#4b5563; width:16px;height:16px;border-radius:50%;background:var(--dot);
-      box-shadow:0 0 0 2px #fff,0 1px 6px rgba(0,0,0,.35)}
-    .bus-icon.stale{opacity:.7;filter:saturate(.75)}
-    .bus-icon.very{opacity:.4;filter:grayscale(.2)}
-    table{width:100%;border-collapse:collapse} td,th{padding:6px 8px;border-bottom:1px solid #eee}
-    .best{margin:4px 0 8px;font-weight:600}
-    .pill{display:inline-block;background:#111827;color:#e5eef7;border-radius:999px;padding:2px 8px;margin-left:4px}
-  </style>
+
+  <!-- 外部CSS -->
+  <link rel="stylesheet" href="./css/styles.css" />
 
   <!-- MapLibre & deck.gl（グローバル） -->
   <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
   <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet"/>
   <script src="https://unpkg.com/deck.gl@8.9.36/dist.min.js"></script>
 </head>
+
 <body>
   <header>
-    <div><b>三次元化</b>（Terrain + 3D建物 + バス停3D：台座＋ポール＋ディスク(軸=水平) + RSSI）</div>
+    <div><b>3Dインフラモデル（つくば市）</b></div>
     <div id="conn" class="muted">接続中</div>
   </header>
 
@@ -53,11 +38,6 @@
       <label>目的停留所:
         <select id="targetStop"></select>
       </label>
-      <button id="btn-search">最短計算</button>
-      <button id="btn-fit">全体表示</button>
-      <button id="btn-reset">初期視点へ</button>
-      <button id="btn-jump-person" style="position:absolute;top:10px;left:10px;z-index:10;">人へジャンプ</button>
-      <label><input type="checkbox" id="chk-exclude-very"> 古い位置を除外</label>
       <span id="last-updated" class="muted">—</span>
       <span id="err" class="muted"></span>
     </div>

@@ -1,0 +1,26 @@
+/*画面枠組*/
+html,body,#map{height:100%}
+body{margin:0}
+
+/*左上 ヘッダー*/
+header{
+  position:absolute;z-index:10;left:12px;top:12px;
+  background:#0f141a;color:#e5eef7;
+  padding:8px 12px;border-radius:10px;font:14px system-ui
+}
+
+/*下 パネル*/
+.panel{
+  position:absolute;z-index:10;left:12px;bottom:12px;right:12px;
+  background:#fff;padding:10px;border-radius:10px;
+  box-shadow:0 6px 20px rgba(0,0,0,.12)
+}
+
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.muted{color:#6b7280}
+
+.item{
+  display:flex;justify-content:space-between;
+  padding:6px 0;border-bottom:1px solid #eee
+}
+

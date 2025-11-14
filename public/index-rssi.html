@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RSSI × 時刻（Excel保存 / 名前ごとにシート分割 + 距離 + 押下マーク）</title>
+  <link rel="stylesheet" href="./css/styles-rssi.css" />
+</head>
+<body>
+  <header>
+    <h1>RSSI × 時刻（Firebase Realtime Database）</h1>
+    <span class="muted" id="last">— 停止中</span>
+    <div class="right-ops row">
+      <a class="btn" href="/index.html">地図へ戻る</a>
+      <button id="btn-start" class="btn primary">▶︎ スタート</button>
+      <button id="btn-mark"  class="btn accent" disabled>● ログ</button>
+      <button id="btn-stop"  class="btn danger" disabled>■ ストップ & Excel保存</button>
+      <button id="btn-clear" class="btn">描画リセット</button>
+    </div>
+  </header>
+
+  <main>
+    <aside id="side">
+      <div class="field">
+        <label><strong>端末ID（deviceId）</strong></label>
+        <select id="sel-receiver"></select>
+        <div class="muted">選択した受信機のみを <b>開始後</b> にリアルタイム購読します（過去は読みません）。</div>
+      </div>
+
+      <div class="field">
+        <label><strong>ビーコンの絞り込み（任意）</strong></label>
+        <input id="filter" placeholder="例: name=筑波大学中央 / uuid=xxxx / major=1&minor=3" />
+        <div class="muted">空欄＝全ビーコン。`name=`, `uuid=`, `major=`, `minor=`（AND結合可）。</div>
+      </div>
+
+      <div class="field">
+        <label><strong>凡例（ビーコン毎）</strong></label>
+        <div id="legend"></div>
+      </div>
+
+      <div class="muted">ヒント：重いと感じたら送信間隔を長くするか、受信機/ビーコンを絞ってください。</div>
+      <div class="muted">ログボタンで押した瞬間の <b>ローカル時刻</b>を記録し、縦線で表示＆Excelの <b>MARKERS</b> シートに書き出します。</div>
+    </aside>
+
+    <section id="chartWrap">
+      <canvas id="chart" height="120"></canvas>
+      <div id="status" class="muted">—</div>
+    </section>
+  </main>
+
+  <!-- Chart.js + adapter + annotation（グローバル） -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
+
+  <!-- SheetJS（グローバル） -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <!-- アプリ本体（ESM） -->
+  <script type="module" src="./js-rssi/app.js"></script>
+</body>
+</html>
