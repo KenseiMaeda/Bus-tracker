@@ -5,7 +5,7 @@ let _layer = null;
 const _persons = new Map();
 
 // ==== モデル設定（バス） ====
-const MODEL_URL = './models/bus.glb';
+const MODEL_URL = new URL('../models/bus.glb', import.meta.url).href;
 const SCALE = 1.0;           // glbが1unit=1m想定。違う場合はここを調整
 const ORIENT = [0, 0, 90];   // [pitch, yaw, roll] deg（ScenegraphLayerに合わせる）
 
