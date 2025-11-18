@@ -63,6 +63,9 @@ function handleBeacon(map, ui, receiverId, v, t){
   ui = ensureUi(ui);
   const timeISO = t?.toISOString?.() || null;
 
+  // ★ 追加：受信したビーコンログを全部見る
+  console.log('[handleBeacon] receiver=', receiverId, 'value=', v, 'time=', timeISO);
+
   // ★ 全ビーコンで出す
   emitBusEventByPolicy(v, timeISO);
 
@@ -71,8 +74,21 @@ function handleBeacon(map, ui, receiverId, v, t){
     ui.lastUpdatedEl.textContent =
       `— 更新: ${new Date().toLocaleTimeString()} | BUILD: ${new Date().toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})}`;
   }
-  ui.afterUpsert();
+
+  // ★ app.js 側に「バス情報」を渡す
+  ui.afterUpsert({
+    id: receiverId,                          // 例: "553bf2272aa86cce"（受信機ID）
+    lng: typeof v.lng === 'number' ? v.lng : null,
+    lat: typeof v.lat === 'number' ? v.lat : null,
+    alt: v.alt,
+    stopName: v.name || v.stopName || v.nearestStop || null,
+    rssi: v.rssi,
+    scanner: v.scanner,
+    time: v.time,
+    raw: v                                    // 生データも一応入れておく
+  });
 }
+
 
 export async function backfillReceiver(map, ui, receiverId, n=20){
   try{
